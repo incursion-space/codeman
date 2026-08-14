@@ -42,6 +42,10 @@ run('gesture bundle', 'node scripts/build-gesture-bundle.mjs');
 // node_modules source into src/web/public/vendor/monaco, so prod always reflects
 // the pinned monaco-editor version and the copy below carries it into dist/.
 run('monaco bundle', 'node scripts/build-monaco-bundle.mjs');
+// Rebuild the Mermaid bundle (file-preview markdown diagrams) from its vendored
+// node_modules source into src/web/public/vendor/mermaid, so prod always
+// reflects the pinned mermaid version and the copy below carries it into dist/.
+run('mermaid bundle', 'node scripts/build-mermaid-bundle.mjs');
 run('copy web assets', 'cp -r src/web/public dist/web/');
 run('copy template', 'cp src/templates/case-template.md dist/templates/');
 
@@ -211,7 +215,8 @@ run(
   'compress',
   `for f in dist/web/public/*.js dist/web/public/*.css dist/web/public/*.html ` +
     `dist/web/public/vendor/*.js dist/web/public/vendor/*.css ` +
-    `dist/web/public/vendor/monaco/*.js dist/web/public/vendor/monaco/*.css; do` +
+    `dist/web/public/vendor/monaco/*.js dist/web/public/vendor/monaco/*.css ` +
+    `dist/web/public/vendor/mermaid/*.js; do` +
     ` [ -f "$f" ] && gzip -9 -k -f "$f" && { brotli -9 -k -f "$f" 2>/dev/null || true; }; done`
 );
 

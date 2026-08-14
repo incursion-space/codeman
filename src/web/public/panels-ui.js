@@ -3411,6 +3411,150 @@ Object.assign(CodemanApp.prototype, {
     return this.filePreviewMonaco;
   },
 
+  /**
+   * Load the Mermaid diagram bundle (lazily, on first markdown preview that
+   * contains a mermaid fence). Mermaid is ~3.5MB minified / ~1MB gzipped, so it
+   * is never loaded at page load; the first diagram dynamic-imports the
+   * committed ESM bundle. The promise is cached so repeated previews share one
+   * load.
+   */
+  async _getMermaid() {
+    if (this._mermaid) return this._mermaid;
+    if (!this._mermaidPromise) {
+      this._mermaidPromise = (async () => {
+        const mod = await import('/vendor/mermaid/mermaid.js');
+        this._mermaid = mod.default || window.mermaid;
+        if (!this._mermaid?.render) throw new Error('mermaid render API missing');
+        this._mermaid.initialize({
+          startOnLoad: false,
+          securityLevel: 'strict',
+          suppressErrorRendering: true,
+          theme: 'dark',
+          fontFamily: 'inherit',
+        });
+        return this._mermaid;
+      })().catch((err) => {
+        console.error('Failed to load Mermaid:', err);
+        this._mermaidPromise = null;
+        throw err;
+      });
+    }
+    return this._mermaidPromise;
+  },
+
+  /**
+   * Render a markdown file into the preview body: marked → hardened DOMPurify
+   * allowlist → table wrapper → Mermaid fence placeholders. The container reuses
+   * the response viewer's `.rv-text` class so the popup inherits the existing
+   * markdown typography/styles; `.markdown-preview` adds preview-specific layout.
+   *
+   * Mermaid fences survive the sanitizer as `pre > code.language-mermaid` (the
+   * allowlist permits pre/code/class); each is replaced with a `.mermaid-preview`
+   * host carrying the diagram source in a dataset attribute, and rendering is
+   * kicked off asynchronously so the document paints immediately.
+   */
+  _renderFilePreviewMarkdown(src) {
+    const bodyEl = this.$('filePreviewBody');
+    if (!bodyEl) return;
+
+    const text = src || '';
+    const container = document.createElement('div');
+    container.className = 'rv-text markdown-preview';
+
+    if (typeof marked !== 'undefined' && marked.parse) {
+      try {
+        let html = this._sanitizeHtml(marked.parse(text, { breaks: true, gfm: true }));
+        html = html
+          .replace(/<table>/g, '<div class="rv-table-wrap"><table>')
+          .replace(/<\/table>/g, '</table></div>');
+
+        const tmpl = document.createElement('template');
+        tmpl.innerHTML = html;
+        tmpl.content.querySelectorAll('pre > code').forEach((code) => {
+          const lang = (code.className || '').match(/language-([\w-]+)/i)?.[1]?.toLowerCase();
+          if (lang === 'mermaid') {
+            const host = document.createElement('div');
+            host.className = 'mermaid-preview';
+            host.dataset.mermaid = code.textContent || '';
+            code.parentElement.replaceWith(host);
+          }
+        });
+        container.appendChild(tmpl.content);
+      } catch (err) {
+        console.error('Markdown render failed, falling back to source:', err);
+        const pre = document.createElement('pre');
+        pre.textContent = text;
+        container.appendChild(pre);
+      }
+    } else {
+      const pre = document.createElement('pre');
+      pre.textContent = text;
+      container.appendChild(pre);
+    }
+
+    bodyEl.innerHTML = '';
+    bodyEl.appendChild(container);
+    this._renderMermaidDiagrams(container);
+  },
+
+  /**
+   * Render every `.mermaid-preview` placeholder in a container to inline SVG.
+   * Each render is sanitized independently (`sanitizeMermaidSvg`, the SVG-profile
+   * DOMPurify pass) before innerHTML insertion. A render failure replaces the
+   * placeholder with the raw diagram source so authors can see their fence.
+   *
+   * Guards: the overlay may close or a new preview/edit may replace the body
+   * while a render is in flight, so insertion only happens if the host is still
+   * connected AND the overlay is still the visible file preview.
+   */
+  async _renderMermaidDiagrams(container) {
+    const hosts = Array.from(container.querySelectorAll('.mermaid-preview[data-mermaid]'));
+    if (!hosts.length) return;
+    let mermaid;
+    try {
+      mermaid = await this._getMermaid();
+    } catch (err) {
+      console.error('Mermaid unavailable, leaving diagram sources as code:', err);
+      for (const host of hosts) {
+        if (!host.isConnected) continue;
+        host.replaceWith(this._mermaidFallback(host.dataset.mermaid, err));
+      }
+      return;
+    }
+
+    for (const host of hosts) {
+      if (!host.isConnected) continue;
+      const overlay = this.$('filePreviewOverlay');
+      if (!overlay?.classList.contains('visible')) continue;
+      const source = host.dataset.mermaid;
+      try {
+        if (!mermaid.parse(source)) throw new Error('Diagram could not be parsed');
+        const { svg } = await mermaid.render(`file-preview-${crypto.randomUUID?.() || Math.random().toString(36).slice(2)}`, source);
+        if (!host.isConnected) continue;
+        if (!this.$('filePreviewOverlay')?.classList.contains('visible')) continue;
+        host.innerHTML = typeof sanitizeMermaidSvg === 'function' ? sanitizeMermaidSvg(svg) : svg;
+        // Drop the marker so a re-entry into this container doesn't re-render.
+        host.removeAttribute('data-mermaid');
+      } catch (err) {
+        if (!host.isConnected) continue;
+        host.replaceWith(this._mermaidFallback(source, err));
+      }
+    }
+  },
+
+  _mermaidFallback(source, err) {
+    const fallback = document.createElement('div');
+    fallback.className = 'mermaid-fallback';
+    const msg = document.createElement('div');
+    msg.className = 'mermaid-fallback-error';
+    msg.textContent = `Diagram render failed: ${err?.message || String(err)}`;
+    const pre = document.createElement('pre');
+    pre.textContent = source;
+    fallback.appendChild(msg);
+    fallback.appendChild(pre);
+    return fallback;
+  },
+
   async openFilePreview(filePath, sessionId = this.activeSessionId, attachmentId = null) {
     if (!sessionId || !filePath) return;
 
@@ -3552,7 +3696,13 @@ Object.assign(CodemanApp.prototype, {
     }
 
     try {
-      const res = await fetch(`/api/sessions/${sessionId}/file-content?path=${encodeURIComponent(filePath)}&lines=500`);
+      // Markdown previews are rendered (not source-dumped), so fetch the full
+      // file rather than the 500-line window — a truncated markdown doc would
+      // render misleadingly (cut tables, orphaned fences).
+      const isMarkdown = ext === 'md' || ext === 'markdown';
+      const res = await fetch(
+        `/api/sessions/${sessionId}/file-content?path=${encodeURIComponent(filePath)}&lines=${isMarkdown ? 10000 : 500}`
+      );
       if (!res.ok) throw new Error('Failed to load file');
 
       const result = await res.json();
@@ -3576,6 +3726,19 @@ Object.assign(CodemanApp.prototype, {
         const downloadHref = `/api/sessions/${sessionId}/file-raw?path=${encodeURIComponent(filePath)}&download=true`;
         bodyEl.innerHTML = `<div class="binary-message">Binary file (${this.formatFileSize(data.size)})<br>Cannot preview<br><a href="${escapeHtml(downloadHref)}" download>Download</a></div>`;
         footerEl.textContent = data.extension || 'binary';
+      } else if (isMarkdown) {
+        // Markdown files render as GFM markdown with Mermaid diagrams instead of
+        // source text. Content stays in filePreviewContent for the copy button;
+        // Edit re-fetches via edit=1 and swaps to the Monaco markdown editor.
+        this.filePreviewContent = data.content;
+        this._renderFilePreviewMarkdown(data.content);
+        const truncNote = data.truncated ? ` (showing ${data.totalLines} lines)` : '';
+        footerEl.textContent = `${data.totalLines} lines \u2022 ${this.formatFileSize(data.size)}${truncNote}`;
+        if (data.editable) {
+          this.filePreviewEditTarget = { sessionId, filePath };
+          const editBtn = this.$('filePreviewEditBtn');
+          if (editBtn) editBtn.hidden = false;
+        }
       } else {
         // Text content — rendered through Monaco (read-only). Monaco takes the
         // text via its own model (never innerHTML), so the XSS posture from the

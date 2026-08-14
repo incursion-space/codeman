@@ -10019,6 +10019,64 @@ kbd {
   overflow: hidden;
 }
 
+/* ---- File Preview markdown render (md files, reused .rv-text typography) ---- */
+
+.file-preview-body .markdown-preview {
+  padding: 1rem 1.25rem;
+  max-width: 72ch;
+  margin: 0 auto;
+  color: var(--text);
+  line-height: 1.6;
+  font-size: 0.85rem;
+}
+
+.file-preview-body .markdown-preview img {
+  max-width: 100%;
+  height: auto;
+}
+
+.file-preview-body .mermaid-preview {
+  margin: 0.75rem 0;
+  padding: 1rem;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow-x: auto;
+}
+
+.file-preview-body .mermaid-preview svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0 auto;
+}
+
+.file-preview-body .mermaid-fallback {
+  margin: 0.75rem 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.file-preview-body .mermaid-fallback-error {
+  padding: 0.35rem 0.75rem;
+  font-size: 0.7rem;
+  color: var(--danger, #e06c75);
+  background: var(--bg-input);
+  border-bottom: 1px solid var(--border);
+}
+
+.file-preview-body .mermaid-fallback pre {
+  margin: 0;
+  padding: 0.75rem;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  line-height: 1.5;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
 .file-preview-body img {
   max-width: 100%;
   max-height: 100%;
