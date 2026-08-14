@@ -3491,6 +3491,166 @@ Object.assign(CodemanApp.prototype, {
     return fallback;
   },
 
+  /**
+   * Render a CSV/TSV file into the preview body as a GitHub-style interactive
+   * table: the first row is the header, a row-number column leads each row,
+   * column headers sort on click, and a search box filters rows live. Cells are
+   * ALWAYS inserted via textContent — never innerHTML — so an untrusted cell
+   * value like `<img onerror=...>` is displayed literally and cannot execute.
+   * Parse problems (bad quoting, no rows) degrade to a message above the raw
+   * source, mirroring GitHub's CSV preview error behavior.
+   *
+   * Rendering is bounded: at most MAX_CSV_ROWS data rows enter the DOM (the
+   * server already caps the fetch at 10k physical lines), with a note when more
+   * rows exist. The raw source stays in filePreviewContent for the copy button;
+   * Edit swaps to the Monaco text editor (csv language) and Cancel/Save re-fetch
+   * + re-render through the normal lifecycle.
+   */
+  _renderFilePreviewCsv(src) {
+    const bodyEl = this.$('filePreviewBody');
+    if (!bodyEl) return;
+
+    const parsed = typeof CsvParser !== 'undefined' && CsvParser.parseCsv
+      ? CsvParser.parseCsv(src || '')
+      : { header: [], rows: [], errors: ['CSV parser unavailable'] };
+    this._csvPreviewState = null;
+
+    const MAX_ROWS = 500;
+    if ((!parsed.header.length && !parsed.rows.length) || parsed.errors.length) {
+      const message = parsed.errors[0] || 'No rows to display';
+      bodyEl.innerHTML =
+        `<div class="csv-fallback">` +
+        `<div class="csv-fallback-error">${escapeHtml(message)}</div>` +
+        `<pre><code>${escapeHtml(src || '')}</code></pre>` +
+        `</div>`;
+      return;
+    }
+
+    const totalRows = parsed.rows.length;
+    const truncated = totalRows > MAX_ROWS;
+    const dataRows = truncated ? parsed.rows.slice(0, MAX_ROWS) : parsed.rows;
+
+    this._csvPreviewState = {
+      header: parsed.header,
+      rows: dataRows,
+      totalRows,
+      sortCol: null,
+      sortDir: 1,
+      query: '',
+    };
+
+    const container = document.createElement('div');
+    container.className = 'csv-preview-wrap';
+
+    const note = document.createElement('div');
+    note.className = 'csv-note';
+    note.textContent = truncated
+      ? `Showing first ${MAX_ROWS} of ${totalRows} rows`
+      : `${totalRows} row${totalRows === 1 ? '' : 's'}`;
+
+    const search = document.createElement('input');
+    search.className = 'csv-search';
+    search.type = 'search';
+    search.placeholder = 'Filter rows...';
+    search.setAttribute('aria-label', 'Filter rows');
+    search.addEventListener('input', () => {
+      if (!this._csvPreviewState) return;
+      this._csvPreviewState.query = search.value.trim().toLowerCase();
+      this._renderCsvTable();
+    });
+
+    const table = document.createElement('table');
+    table.className = 'csv-table';
+    table.setAttribute('aria-label', 'CSV/TSV preview');
+
+    container.appendChild(note);
+    container.appendChild(search);
+    container.appendChild(table);
+
+    bodyEl.innerHTML = '';
+    bodyEl.appendChild(container);
+    this._renderCsvTable();
+  },
+
+  /**
+   * Rebuild the CSV table header + body from `_csvPreviewState`, honoring the
+   * current sort column/direction and search query. Header text and body cells
+   * are set via textContent only. Sorting is numeric-aware (compareCells);
+   * searching is a case-insensitive substring match across any cell. Rebuilding
+   * is cheap at the ≤500-row cap, so each sort/filter interaction re-renders.
+   */
+  _renderCsvTable() {
+    const state = this._csvPreviewState;
+    if (!state) return;
+    const table = this.$('filePreviewBody')?.querySelector('table.csv-table');
+    if (!table) return;
+
+    const thead = document.createElement('thead');
+    const headRow = document.createElement('tr');
+    const corner = document.createElement('th');
+    corner.className = 'csv-rownum';
+    corner.scope = 'col';
+    corner.setAttribute('aria-label', 'Row');
+    headRow.appendChild(corner);
+
+    state.header.forEach((col, colIndex) => {
+      const th = document.createElement('th');
+      th.scope = 'col';
+      th.textContent = col;
+      const active = state.sortCol === colIndex;
+      if (active) {
+        th.classList.add('csv-sorted');
+        th.setAttribute('aria-sort', state.sortDir === 1 ? 'ascending' : 'descending');
+        const arrow = document.createElement('span');
+        arrow.className = 'csv-sort-arrow';
+        arrow.textContent = state.sortDir === 1 ? ' \u25B2' : ' \u25BC';
+        th.appendChild(arrow);
+      } else {
+        th.setAttribute('aria-sort', 'none');
+      }
+      th.addEventListener('click', () => {
+        if (state.sortCol === colIndex) state.sortDir *= -1;
+        else {
+          state.sortCol = colIndex;
+          state.sortDir = 1;
+        }
+        this._renderCsvTable();
+      });
+      headRow.appendChild(th);
+    });
+    thead.appendChild(headRow);
+
+    let rows = state.rows;
+    if (state.sortCol !== null) {
+      const col = state.sortCol;
+      const compare = typeof CsvParser !== 'undefined' && CsvParser.compareCells ? CsvParser.compareCells : undefined;
+      rows = rows.slice().sort((a, b) => {
+        const cmp = compare ? compare(a[col], b[col]) : String(a[col]).localeCompare(String(b[col]));
+        return state.sortDir * cmp;
+      });
+    }
+    if (state.query) {
+      rows = rows.filter((r) => r.some((cell) => String(cell).toLowerCase().includes(state.query)));
+    }
+
+    const tbody = document.createElement('tbody');
+    rows.forEach((cells, index) => {
+      const tr = document.createElement('tr');
+      const num = document.createElement('td');
+      num.className = 'csv-rownum';
+      num.textContent = String(index + 1);
+      tr.appendChild(num);
+      state.header.forEach((_headerCell, colIndex) => {
+        const td = document.createElement('td');
+        td.textContent = cells[colIndex] ?? '';
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+
+    table.replaceChildren(thead, tbody);
+  },
+
   async openFilePreview(filePath, sessionId = this.activeSessionId, attachmentId = null) {
     if (!sessionId || !filePath) return;
 
@@ -3586,10 +3746,13 @@ Object.assign(CodemanApp.prototype, {
     try {
       // Markdown previews are rendered (not source-dumped), so fetch the full
       // file rather than the 500-line window — a truncated markdown doc would
-      // render misleadingly (cut tables, orphaned fences).
+      // render misleadingly (cut tables, orphaned fences). CSV/TSV tables can
+      // also span many physical lines (quoted embedded newlines), so they get
+      // the same generous window.
       const isMarkdown = ext === 'md' || ext === 'markdown';
+      const isCsv = ext === 'csv' || ext === 'tsv';
       const res = await fetch(
-        `/api/sessions/${sessionId}/file-content?path=${encodeURIComponent(filePath)}&lines=${isMarkdown ? 10000 : 500}`
+        `/api/sessions/${sessionId}/file-content?path=${encodeURIComponent(filePath)}&lines=${isMarkdown || isCsv ? 10000 : 500}`
       );
       if (!res.ok) throw new Error('Failed to load file');
 
@@ -3620,6 +3783,19 @@ Object.assign(CodemanApp.prototype, {
         // Edit re-fetches via edit=1 and swaps to the Monaco markdown editor.
         this.filePreviewContent = data.content;
         this._renderFilePreviewMarkdown(data.content);
+        const truncNote = data.truncated ? ` (showing ${data.totalLines} lines)` : '';
+        footerEl.textContent = `${data.totalLines} lines \u2022 ${this.formatFileSize(data.size)}${truncNote}`;
+        if (data.editable) {
+          this.filePreviewEditTarget = { sessionId, filePath };
+          const editBtn = this.$('filePreviewEditBtn');
+          if (editBtn) editBtn.hidden = false;
+        }
+      } else if (isCsv) {
+        // CSV/TSV files render as a GitHub-style interactive table instead of
+        // source text. Content stays in filePreviewContent for the copy button;
+        // Edit re-fetches via edit=1 and swaps to the Monaco text editor.
+        this.filePreviewContent = data.content;
+        this._renderFilePreviewCsv(data.content);
         const truncNote = data.truncated ? ` (showing ${data.totalLines} lines)` : '';
         footerEl.textContent = `${data.totalLines} lines \u2022 ${this.formatFileSize(data.size)}${truncNote}`;
         if (data.editable) {
