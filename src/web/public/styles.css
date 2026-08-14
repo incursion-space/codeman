@@ -9949,9 +9949,12 @@ kbd {
 
 .file-preview-window {
   width: 80vw;
-  max-width: 900px;
+  max-width: calc(100vw - 2rem);
   height: 80vh;
-  max-height: 700px;
+  max-height: calc(100vh - 2rem);
+  min-width: 480px;
+  min-height: 320px;
+  resize: both;
   background: var(--floating-bg);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
