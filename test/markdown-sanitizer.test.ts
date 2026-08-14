@@ -68,6 +68,30 @@ function loadShippingSanitizer(): (html: string) => string {
   return fn;
 }
 
+/** Build the SHIPPING mermaid-SVG sanitizer the way the browser does: vendored DOMPurify
+ *  (bound to our jsdom window) + the SVG-profile config from sanitize-html.js. */
+function loadMermaidSvgSanitizer(): (svg: string) => string {
+  const dompurifySrc = readFileSync(join(publicDir, 'vendor/dompurify.min.js'), 'utf8');
+  const sanitizeSrc = readFileSync(join(publicDir, 'sanitize-html.js'), 'utf8');
+
+  const dpModule: { exports: unknown } = { exports: {} };
+  // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
+  new Function('module', 'exports', dompurifySrc)(dpModule, dpModule.exports);
+  const factory = dpModule.exports as (win: unknown) => { sanitize: (h: string, c?: unknown) => string };
+  const DOMPurify = factory(jsdomWindow);
+
+  const sanModule: { exports: { createMermaidSvgSanitizer?: (dp: unknown) => (svg: string) => string } } = {
+    exports: {},
+  };
+  // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
+  new Function('module', 'exports', sanitizeSrc)(sanModule, sanModule.exports);
+  const create = sanModule.exports.createMermaidSvgSanitizer;
+  if (typeof create !== 'function') throw new Error('createMermaidSvgSanitizer not exported');
+  const fn = create(DOMPurify);
+  if (typeof fn !== 'function') throw new Error('sanitizeMermaidSvg not wired');
+  return fn;
+}
+
 /** Faithful copy of the OLD denylist _sanitizeHtml (app.js pre-COD-56) — used only to prove RED. */
 function oldDenylistSanitize(html: string): string {
   const tpl = jsdomDocument.createElement('template');
@@ -222,5 +246,61 @@ describe('COD-56 markdown sanitizer (DOMPurify allowlist)', () => {
       expect(out).not.toMatch(/\sstyle\s*=/);
       expect(out).not.toContain('javascript:');
     });
+  });
+});
+
+describe('Mermaid diagram SVG sanitizer (file-preview markdown)', () => {
+  let sanitizeSvg: (svg: string) => string;
+
+  beforeAll(() => {
+    sanitizeSvg = loadMermaidSvgSanitizer();
+  });
+
+  it('keeps the SVG machinery mermaid diagrams need', () => {
+    const out = sanitizeSvg(
+      '<svg class="mermaid" id="mermaid-1" role="img" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">' +
+        '<style>#mermaid-1 .node rect { fill: #333; }</style>' +
+        '<defs><marker id="arrow" refX="10" markerWidth="6"><path d="M0 0 L6 3 L0 6 z"/></marker></defs>' +
+        '<g><rect x="0" y="0" width="50" height="30" rx="5" class="node" fill="#333" stroke="#eee"/>' +
+        '<path d="M50 15 L90 15" marker-end="url(#arrow)" stroke="#eee"/></g>' +
+        '</svg>'
+    );
+    expect(out).toContain('<svg');
+    expect(out).toContain('class="mermaid"');
+    expect(out).toContain('role="img"');
+    expect(out).toContain('<style>');
+    expect(out).toContain('<marker');
+    expect(out).toContain('marker-end="url(#arrow)"');
+    expect(out).toContain('<rect');
+    expect(out).toContain('<path');
+  });
+
+  it('strips <script> and event-handler attributes from diagram SVG', () => {
+    const out = sanitizeSvg(
+      '<svg><script>alert(1)</script>' + '<g onclick="alert(1)" onload="alert(1)"><rect/></g></svg>'
+    );
+    const lower = out.toLowerCase();
+    expect(lower).not.toContain('<script');
+    expect(lower).not.toContain('alert(1)');
+    expect(lower).not.toContain('onclick');
+    expect(lower).not.toContain('onload');
+  });
+
+  it('strips javascript: URLs on xlink:href and foreignObject script content', () => {
+    const out = sanitizeSvg(
+      '<svg>' +
+        '<foreignObject><script>alert(1)</script><iframe srcdoc="<script>alert(1)</script>"></iframe></foreignObject>' +
+        '<g><a xlink:href="javascript:alert(1)"><rect/></a></g>' +
+        '</svg>'
+    );
+    const lower = out.toLowerCase();
+    expect(lower).not.toContain('javascript:');
+    expect(lower).not.toContain('<script');
+    expect(lower).not.toContain('<iframe');
+  });
+
+  it('the markdown sanitizer still strips svg (mermaid output must NOT go through it)', () => {
+    const sanitize = loadShippingSanitizer();
+    expect(sanitize('<svg><circle/></svg>').toLowerCase()).not.toContain('<svg');
   });
 });

@@ -24,7 +24,9 @@
  * jsdom-window DOMPurify instance and exercise the exact same config.
  *
  * @globals {function} sanitizeMarkdownHtml - (html:string) => string, sanitized HTML
+ * @globals {function} sanitizeMermaidSvg - (svg:string) => string, sanitized diagram SVG
  * @globals {function} createMarkdownSanitizer - (DOMPurify) => sanitizeMarkdownHtml (for tests)
+ * @globals {function} createMermaidSvgSanitizer - (DOMPurify) => sanitizeMermaidSvg (for tests)
  * @dependency vendor/dompurify.min.js (provides the global DOMPurify)
  * @loadorder 5.6 of 15 — after input-cjk.js(5.5), before app.js(6) (app.js calls it)
  */
@@ -148,16 +150,70 @@
   // Expose the factory for tests (and any non-browser consumer).
   if (root) {
     root.createMarkdownSanitizer = createMarkdownSanitizer;
+    root.createMermaidSvgSanitizer = createMermaidSvgSanitizer;
     // In the browser, vendor/dompurify.min.js has already defined the global DOMPurify.
     if (root.DOMPurify && typeof root.DOMPurify.sanitize === 'function') {
       root.sanitizeMarkdownHtml = createMarkdownSanitizer(root.DOMPurify);
+      root.sanitizeMermaidSvg = createMermaidSvgSanitizer(root.DOMPurify);
     }
+  }
+
+  /**
+   * Sanitizer for Mermaid-rendered diagram SVG before it is inserted via innerHTML
+   * (file-preview markdown renderer). The markdown allowlist above deliberately
+   * FORBIDS svg/math/style, so this is a SEPARATE, tighter pass: it runs only on the
+   * SVG that the Mermaid library itself generated from a diagram source.
+   *
+   * Mermaid runs with securityLevel:'strict' (escapes HTML in labels, disables click
+   * handlers), but its output must not be trusted on that alone — open-webui's
+   * stored-XSS advisory (GHSA-v8qj-hxv7-mgvv) was exactly a mermaid markdown preview
+   * rendered without an independent sanitization pass. DOMPurify's SVG profile strips
+   * script, event-handler attributes and foreign-namespace surprises while keeping the
+   * shape/filter/marker machinery the diagrams need. `foreignObject` (HTML labels) and
+   * the theme `<style>` block are allowed because strict-mode mermaid only emits them
+   * from its own config, never from diagram content.
+   *
+   * @param {object} DOMPurify - a DOMPurify instance (browser global, or jsdom-bound in tests)
+   * @returns {(svg: string) => string} sanitized SVG string
+   */
+  function createMermaidSvgSanitizer(DOMPurify) {
+    if (!DOMPurify || typeof DOMPurify.sanitize !== 'function') {
+      throw new Error('createMermaidSvgSanitizer: a DOMPurify instance is required');
+    }
+
+    var CONFIG = {
+      USE_PROFILES: { svg: true, svgFilters: true },
+      // HTML labels (foreignObject) and the theme <style> block are the only tags
+      // outside the SVG profile that mermaid's strict-mode output legitimately emits.
+      ADD_TAGS: ['foreignObject', 'style'],
+      // Presentation attributes mermaid relies on that the profile list omits, plus
+      // role="img" for a11y. Style *attributes* stay forbidden (CSS vectors); the
+      // <style> *element* above is mermaid-theme CSS only.
+      ADD_ATTR: [
+        'alignment-baseline',
+        'clip-path',
+        'dominant-baseline',
+        'marker-end',
+        'marker-mid',
+        'marker-start',
+        'text-anchor',
+        'role',
+      ],
+      FORBID_TAGS: ['script'],
+      // DOMPurify drops event-handler attributes by default; keep text on strip.
+      KEEP_CONTENT: true,
+    };
+
+    return function sanitizeMermaidSvg(svg) {
+      return DOMPurify.sanitize(svg == null ? '' : String(svg), CONFIG);
+    };
   }
 
   // CommonJS export for the vitest/jsdom unit test.
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
       createMarkdownSanitizer: createMarkdownSanitizer,
+      createMermaidSvgSanitizer: createMermaidSvgSanitizer,
       ALLOWED_TAGS: ALLOWED_TAGS,
       ALLOWED_ATTR: ALLOWED_ATTR,
     };
