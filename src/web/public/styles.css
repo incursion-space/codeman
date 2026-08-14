@@ -10077,6 +10077,105 @@ kbd {
   word-break: break-all;
 }
 
+/* ---- File Preview CSV/TSV table (GitHub-style interactive preview) ---- */
+
+.file-preview-body .csv-preview-wrap {
+  padding: 1rem;
+  overflow-x: auto;
+}
+
+.file-preview-body .csv-note {
+  margin-bottom: 0.5rem;
+  font-size: 0.72rem;
+  color: var(--text-dim);
+}
+
+.file-preview-body .csv-search {
+  display: block;
+  width: 100%;
+  max-width: 24rem;
+  margin-bottom: 0.75rem;
+  padding: 0.35rem 0.6rem;
+  background: var(--bg-input);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 0.8rem;
+}
+
+.file-preview-body .csv-table {
+  border-collapse: collapse;
+  font-size: 0.8rem;
+  color: var(--text);
+}
+
+.file-preview-body .csv-table th,
+.file-preview-body .csv-table td {
+  border: 1px solid var(--border);
+  padding: 0.35rem 0.6rem;
+  text-align: left;
+  white-space: nowrap;
+  vertical-align: top;
+}
+
+.file-preview-body .csv-table thead th {
+  position: sticky;
+  top: 0;
+  background: var(--bg-input);
+  font-weight: 600;
+  cursor: pointer;
+  user-select: none;
+}
+
+.file-preview-body .csv-table thead th.csv-sorted {
+  color: var(--accent);
+}
+
+.file-preview-body .csv-table thead th .csv-sort-arrow {
+  font-size: 0.65em;
+}
+
+.file-preview-body .csv-table .csv-rownum {
+  width: 2.75rem;
+  text-align: right;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  background: var(--bg-input);
+}
+
+.file-preview-body .csv-table tbody tr:nth-child(even) td {
+  background: color-mix(in srgb, var(--bg-input) 45%, transparent);
+}
+
+.file-preview-body .csv-table tbody tr:hover td {
+  background: var(--bg-hover);
+}
+
+.file-preview-body .csv-fallback {
+  padding: 1rem;
+}
+
+.file-preview-body .csv-fallback-error {
+  margin-bottom: 0.5rem;
+  padding: 0.35rem 0.75rem;
+  border: 1px solid var(--danger, #e06c75);
+  border-radius: 6px;
+  font-size: 0.8rem;
+  color: var(--danger, #e06c75);
+  background: var(--bg-input);
+}
+
+.file-preview-body .csv-fallback pre {
+  margin: 0;
+  padding: 0.75rem;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  line-height: 1.5;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
 .file-preview-body img {
   max-width: 100%;
   max-height: 100%;
