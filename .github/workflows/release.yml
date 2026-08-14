@@ -1,9 +1,10 @@
 name: Release
 
-on:
-  push:
-    branches:
-      - master
+# Disabled: release pipeline paused. Re-enable by restoring the triggers.
+# on:
+#   push:
+#     branches:
+#       - master
 
 concurrency: ${{ github.workflow }}-${{ github.ref }}
 
