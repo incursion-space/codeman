@@ -1,0 +1,52 @@
+name: Dockerize branch
+
+on:
+  push:
+    branches-ignore:
+      - master
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: dockerize-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  dockerize:
+    name: Build & push branch image
+    runs-on: ubuntu-latest
+    # Only branches that actually carry a Dockerfile at the repo root get a
+    # build; branches without one skip cleanly instead of failing.
+    if: hashFiles('Dockerfile') != ''
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Compute image tag
+        id: meta
+        env:
+          REF: ${{ github.ref_name }}
+        run: |
+          TAG=$(echo "$REF" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9._-]/-/g')
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.tag }}
