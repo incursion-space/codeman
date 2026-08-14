@@ -3298,6 +3298,119 @@ Object.assign(CodemanApp.prototype, {
     }
   },
 
+  _extFromPath(filePath) {
+    return (filePath.split('.').pop() || '').toLowerCase();
+  },
+
+  /**
+   * Map a file extension to a Monaco language id. Returns undefined for unknown
+   * extensions so callers fall back to Monaco's default plaintext highlighting.
+   */
+  _monacoLanguageId(ext) {
+    if (!ext) return undefined;
+    const map = {
+      // TypeScript / JavaScript
+      ts: 'typescript', tsx: 'typescript', mts: 'typescript', cts: 'typescript',
+      js: 'javascript', jsx: 'javascript', mjs: 'javascript', cjs: 'javascript',
+      // Python / Rust / Go
+      py: 'python', pyw: 'python', pyx: 'python',
+      rs: 'rust', go: 'go',
+      // C-family / other compiled
+      c: 'c', h: 'c', cpp: 'cpp', cc: 'cpp', cxx: 'cpp', hpp: 'cpp',
+      cs: 'csharp', java: 'java', kt: 'kotlin', swift: 'swift', dart: 'dart',
+      // Web
+      html: 'html', htm: 'html', vue: 'html',
+      css: 'css', scss: 'scss', sass: 'scss', less: 'less',
+      // Data / config
+      json: 'json', yaml: 'yaml', yml: 'yaml', xml: 'xml',
+      toml: 'ini', ini: 'ini', conf: 'ini', properties: 'ini',
+      // Shell / scripting
+      sh: 'shell', bash: 'shell', zsh: 'shell', fish: 'shell',
+      rb: 'ruby', php: 'php', ps1: 'powershell', bat: 'powershell',
+      // Docs / misc
+      md: 'markdown', markdown: 'markdown',
+      sql: 'sql', diff: 'diff', dockerfile: 'dockerfile',
+    };
+    return map[ext.toLowerCase()];
+  },
+
+  /**
+   * Load the Monaco editor bundle (lazily, on first use). Monaco is ~4MB plus
+   * its workers, so it is never loaded at page load: the first text preview
+   * dynamic-imports the committed ESM bundle and injects its stylesheet. The
+   * promise is cached so concurrent/open+edit transitions share one load.
+   */
+  async _getMonaco() {
+    if (this._monaco) return this._monaco;
+    if (!this._monacoPromise) {
+      this._monacoPromise = (async () => {
+        if (!document.querySelector('link[data-monaco-css]')) {
+          const link = document.createElement('link');
+          link.rel = 'stylesheet';
+          link.href = 'vendor/monaco/monaco.css';
+          link.setAttribute('data-monaco-css', '');
+          document.head.appendChild(link);
+        }
+        const mod = await import('/vendor/monaco/monaco.js');
+        this._monaco = mod.default || window.monaco;
+        return this._monaco;
+      })().catch((err) => {
+        console.error('Failed to load Monaco editor:', err);
+        this._monacoPromise = null;
+        throw err;
+      });
+    }
+    return this._monacoPromise;
+  },
+
+  /**
+   * Dispose the current Monaco editor (if any) and remove its host element.
+   * Monaco keeps listeners/observers alive until dispose(), so this must run
+   * before bodyEl is cleared with innerHTML.
+   */
+  _disposeFilePreviewMonaco() {
+    if (this.filePreviewMonaco) {
+      try {
+        this.filePreviewMonaco.dispose();
+      } catch (err) {
+        console.warn('Failed to dispose preview editor:', err);
+      }
+      this.filePreviewMonaco = null;
+    }
+  },
+
+  /**
+   * Replace the preview body with a Monaco editor. Requires _getMonaco() to
+   * have run (this._monaco loaded). Content is set through Monaco's own model,
+   * never innerHTML, so file bytes are never injected as HTML.
+   */
+  _createFilePreviewMonaco(options) {
+    this._disposeFilePreviewMonaco();
+    const bodyEl = this.$('filePreviewBody');
+    if (!bodyEl) return null;
+    bodyEl.innerHTML = '';
+    const host = document.createElement('div');
+    host.className = 'file-preview-monaco';
+    bodyEl.appendChild(host);
+    this.filePreviewMonaco = this._monaco.editor.create(host, {
+      value: options.value,
+      language: options.language || 'plaintext',
+      readOnly: options.readOnly !== false,
+      theme: 'vs-dark',
+      minimap: { enabled: false },
+      scrollBeyondLastLine: false,
+      automaticLayout: true,
+      fontSize: 12,
+      lineHeight: 18,
+      tabSize: 2,
+      wordWrap: 'on',
+      renderWhitespace: 'none',
+      folding: true,
+      padding: { top: 8, bottom: 8 },
+    });
+    return this.filePreviewMonaco;
+  },
+
   async openFilePreview(filePath, sessionId = this.activeSessionId, attachmentId = null) {
     if (!sessionId || !filePath) return;
 
@@ -3383,11 +3496,17 @@ Object.assign(CodemanApp.prototype, {
           const lines = text.split('\n');
           const clippedByLines = lines.length > TEXT_PREVIEW_MAX_LINES;
           const shown = clippedByLines ? lines.slice(0, TEXT_PREVIEW_MAX_LINES).join('\n') : text;
-          bodyEl.innerHTML = `<pre><code>${escapeHtml(shown)}</code></pre>`;
           this.filePreviewContent = shown;
           if (clippedByLines || clippedByBytes) {
             const note = clippedByLines ? `showing first ${TEXT_PREVIEW_MAX_LINES} lines` : 'showing the start of the file';
             footerEl.textContent = `${footerEl.textContent} (${note})`;
+          }
+          try {
+            await this._getMonaco();
+            this._createFilePreviewMonaco({ value: shown, language: this._monacoLanguageId(ext), readOnly: true });
+          } catch (err) {
+            console.error('Monaco unavailable, falling back to plain text:', err);
+            bodyEl.innerHTML = `<pre><code>${escapeHtml(shown)}</code></pre>`;
           }
         } catch (err) {
           bodyEl.innerHTML = `<div class="binary-message">Error: ${escapeHtml(err.message)}</div>`;
@@ -3458,9 +3577,22 @@ Object.assign(CodemanApp.prototype, {
         bodyEl.innerHTML = `<div class="binary-message">Binary file (${this.formatFileSize(data.size)})<br>Cannot preview<br><a href="${escapeHtml(downloadHref)}" download>Download</a></div>`;
         footerEl.textContent = data.extension || 'binary';
       } else {
-        // Text content
+        // Text content — rendered through Monaco (read-only). Monaco takes the
+        // text via its own model (never innerHTML), so the XSS posture from the
+        // old escapeHtml'd <pre><code> is preserved; the raw string is also
+        // kept in filePreviewContent for the copy button.
         this.filePreviewContent = data.content;
-        bodyEl.innerHTML = `<pre><code>${escapeHtml(data.content)}</code></pre>`;
+        try {
+          await this._getMonaco();
+          this._createFilePreviewMonaco({
+            value: data.content,
+            language: this._monacoLanguageId(ext),
+            readOnly: true,
+          });
+        } catch (err) {
+          console.error('Monaco unavailable, falling back to plain text:', err);
+          bodyEl.innerHTML = `<pre><code>${escapeHtml(data.content)}</code></pre>`;
+        }
         const truncNote = data.truncated ? ` (showing 500/${data.totalLines} lines)` : '';
         footerEl.textContent = `${data.totalLines} lines \u2022 ${this.formatFileSize(data.size)}${truncNote}`;
         // Edit affordance only when the server says an edit=1 re-fetch would
@@ -3519,6 +3651,7 @@ Object.assign(CodemanApp.prototype, {
   // ═══════════════════════════════════════════════════════════════
 
   _resetFilePreviewEdit() {
+    this._disposeFilePreviewMonaco();
     this.filePreviewEdit = null;
     this.filePreviewEditTarget = null;
     const editBtn = this.$('filePreviewEditBtn');
@@ -3570,17 +3703,31 @@ Object.assign(CodemanApp.prototype, {
       saving: false,
     };
 
-    const textarea = document.createElement('textarea');
-    textarea.className = 'file-preview-editor';
-    textarea.spellcheck = false;
-    textarea.setAttribute('autocapitalize', 'off');
-    textarea.setAttribute('autocorrect', 'off');
-    textarea.setAttribute('autocomplete', 'off');
-    textarea.wrap = 'off';
-    textarea.value = data.content;
-    textarea.addEventListener('input', () => this._onFilePreviewEditInput());
-    bodyEl.innerHTML = '';
-    bodyEl.appendChild(textarea);
+    // Same container Monaco already owns in read-only preview: replace it with
+    // an editable instance. If Monaco cannot load (offline, cache eviction)
+    // fall back to the plain <textarea> so editing still works.
+    try {
+      await this._getMonaco();
+      this._createFilePreviewMonaco({
+        value: data.content,
+        language: this._monacoLanguageId(this._extFromPath(target.filePath)),
+        readOnly: false,
+      });
+      this.filePreviewMonaco.onDidChangeModelContent(() => this._onFilePreviewEditInput());
+    } catch (err) {
+      console.error('Monaco unavailable, falling back to textarea editor:', err);
+      const textarea = document.createElement('textarea');
+      textarea.className = 'file-preview-editor';
+      textarea.spellcheck = false;
+      textarea.setAttribute('autocapitalize', 'off');
+      textarea.setAttribute('autocorrect', 'off');
+      textarea.setAttribute('autocomplete', 'off');
+      textarea.wrap = 'off';
+      textarea.value = data.content;
+      textarea.addEventListener('input', () => this._onFilePreviewEditInput());
+      bodyEl.innerHTML = '';
+      bodyEl.appendChild(textarea);
+    }
     // Deliberately no autofocus: on phones that would pop the OS keyboard
     // before the user has scrolled to the line they want to change.
 
@@ -3597,9 +3744,13 @@ Object.assign(CodemanApp.prototype, {
   _onFilePreviewEditInput() {
     const edit = this.filePreviewEdit;
     if (!edit) return;
-    const textarea = this.$('filePreviewBody')?.querySelector('textarea.file-preview-editor');
-    if (!textarea) return;
-    edit.dirty = textarea.value !== edit.original;
+    const editor = this.filePreviewMonaco;
+    const textarea = editor
+      ? null
+      : this.$('filePreviewBody')?.querySelector('textarea.file-preview-editor');
+    const value = editor ? editor.getValue() : textarea?.value;
+    if (value === undefined) return;
+    edit.dirty = value !== edit.original;
     const dirtyEl = this.$('filePreviewDirty');
     if (dirtyEl) dirtyEl.hidden = !edit.dirty;
     const saveBtn = this.$('filePreviewSaveBtn');
@@ -3618,8 +3769,12 @@ Object.assign(CodemanApp.prototype, {
   async saveFilePreviewEdit(force = false) {
     const edit = this.filePreviewEdit;
     if (!edit || edit.saving) return;
-    const textarea = this.$('filePreviewBody')?.querySelector('textarea.file-preview-editor');
-    if (!textarea) return;
+    const editor = this.filePreviewMonaco;
+    const textarea = editor
+      ? null
+      : this.$('filePreviewBody')?.querySelector('textarea.file-preview-editor');
+    const value = editor ? editor.getValue() : textarea?.value;
+    if (value === undefined) return;
 
     edit.saving = true;
     const saveBtn = this.$('filePreviewSaveBtn');
@@ -3641,7 +3796,7 @@ Object.assign(CodemanApp.prototype, {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           path: edit.filePath,
-          content: textarea.value,
+          content: value,
           baseHash: edit.baseHash,
           eol: edit.eol ?? undefined, // Zod .optional() rejects null
           force: force || undefined,
@@ -4117,10 +4272,11 @@ Object.assign(CodemanApp.prototype, {
 
   copyFilePreviewContent() {
     // While editing, copy the live editor buffer (not the stale preview text).
-    const editTextarea = this.filePreviewEdit
+    const editor = this.filePreviewEdit ? this.filePreviewMonaco : null;
+    const editTextarea = this.filePreviewEdit && !editor
       ? this.$('filePreviewBody')?.querySelector('textarea.file-preview-editor')
       : null;
-    const content = editTextarea ? editTextarea.value : this.filePreviewContent;
+    const content = editor ? editor.getValue() : editTextarea ? editTextarea.value : this.filePreviewContent;
     if (content) {
       navigator.clipboard.writeText(content).then(() => {
         this.showToast('Copied to clipboard', 'success');
