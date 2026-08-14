@@ -9858,6 +9858,15 @@ kbd {
   font-family: inherit;
 }
 
+/* Neutralize the vendored highlight.js theme's own block/padding/background so
+   the code block keeps the preview popup's padding, wrapping and --bg-dark. */
+.file-preview-body pre code.hljs {
+  display: block;
+  padding: 0;
+  background: transparent;
+  overflow-x: visible;
+}
+
 .file-preview-body img {
   max-width: 100%;
   max-height: 100%;

@@ -42,6 +42,8 @@ const APP_SHELL = [
   '/vendor/xterm-zerolag-input.js',
   '/vendor/xterm-predictive-echo.js',
   '/vendor/xterm.css',
+  '/vendor/highlight.min.js',
+  '/vendor/highlight-theme.css',
   '/icon-192.png',
   '/icon-512.png',
   '/manifest.json',

@@ -3234,6 +3234,54 @@ Object.assign(CodemanApp.prototype, {
     if (headerBtn) headerBtn.setAttribute('aria-expanded', 'false');
   },
 
+  /**
+   * Map a file extension to a highlight.js language alias. Returns undefined
+   * for unknown extensions so callers fall back to auto-detection.
+   */
+  _highlightJsLanguage(ext) {
+    if (!ext) return undefined;
+    const map = {
+      // TypeScript / JavaScript
+      ts: 'typescript', tsx: 'typescript', mts: 'typescript', cts: 'typescript',
+      js: 'javascript', jsx: 'javascript', mjs: 'javascript', cjs: 'javascript',
+      // Python / Rust / Go
+      py: 'python', pyw: 'python', pyx: 'python',
+      rs: 'rust', go: 'go',
+      // C-family / other compiled
+      c: 'c', h: 'c', cpp: 'cpp', cc: 'cpp', cxx: 'cpp', hpp: 'cpp',
+      cs: 'csharp', java: 'java', kt: 'kotlin', swift: 'swift', dart: 'dart',
+      // Web
+      html: 'xml', htm: 'xml', vue: 'xml',
+      css: 'css', scss: 'scss', sass: 'scss', less: 'less',
+      // Data / config
+      json: 'json', yaml: 'yaml', yml: 'yaml', xml: 'xml',
+      toml: 'toml', ini: 'ini', conf: 'ini', properties: 'properties',
+      // Shell / scripting
+      sh: 'bash', bash: 'bash', zsh: 'bash', fish: 'bash',
+      rb: 'ruby', php: 'php', ps1: 'powershell', bat: 'powershell',
+      // Docs / misc
+      md: 'markdown', markdown: 'markdown',
+      sql: 'sql', diff: 'diff', dockerfile: 'dockerfile', gradle: 'gradle',
+    };
+    return map[ext.toLowerCase()];
+  },
+
+  /**
+   * Apply highlight.js to a code element if the library is present. Must run
+   * AFTER escapeHtml has been injected — highlighting adds spans over already
+   * escaped text and never feeds raw file bytes into innerHTML.
+   */
+  _applyHighlighting(codeEl, ext) {
+    if (typeof hljs === 'undefined' || !codeEl) return;
+    const lang = this._highlightJsLanguage(ext);
+    if (lang && hljs.getLanguage(lang)) codeEl.classList.add(`language-${lang}`);
+    try {
+      hljs.highlightElement(codeEl);
+    } catch (err) {
+      console.warn('Failed to highlight preview code:', err);
+    }
+  },
+
   async openFilePreview(filePath, sessionId = this.activeSessionId, attachmentId = null) {
     if (!sessionId || !filePath) return;
 
@@ -3277,6 +3325,7 @@ Object.assign(CodemanApp.prototype, {
           if (!res.ok) throw new Error('Failed to load attachment');
           const text = await res.text();
           bodyEl.innerHTML = `<pre><code>${escapeHtml(text)}</code></pre>`;
+          this._applyHighlighting(bodyEl.querySelector('pre code'), ext);
         } catch (err) {
           bodyEl.innerHTML = `<div class="binary-message">Error: ${escapeHtml(err.message)}</div>`;
         }
@@ -3349,6 +3398,7 @@ Object.assign(CodemanApp.prototype, {
         // Text content
         this.filePreviewContent = data.content;
         bodyEl.innerHTML = `<pre><code>${escapeHtml(data.content)}</code></pre>`;
+        this._applyHighlighting(bodyEl.querySelector('pre code'), ext);
         const truncNote = data.truncated ? ` (showing 500/${data.totalLines} lines)` : '';
         footerEl.textContent = `${data.totalLines} lines \u2022 ${this.formatFileSize(data.size)}${truncNote}`;
         // Edit affordance only when the server says an edit=1 re-fetch would
