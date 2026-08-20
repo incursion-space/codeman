@@ -628,6 +628,7 @@ class CodemanApp {
     // so every module's Object.assign has already run.
     this.fileBrowserShowHidden = this._loadFileBrowserShowHidden?.() ?? false;
     this.filePreviewContent = '';
+    this.filePreviewPath = '';
 
     // Toast container cache (methods in panels-ui.js)
     this._toastContainer = null;

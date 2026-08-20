@@ -3661,6 +3661,8 @@ Object.assign(CodemanApp.prototype, {
 
     if (!overlay || !bodyEl) return;
 
+    this.filePreviewPath = filePath;
+
     // Edit mode: reset any prior editor state whenever a preview (re)loads.
     this._resetFilePreviewEdit();
     // Stop whatever the previous preview was playing. Overwriting innerHTML
@@ -3848,6 +3850,7 @@ Object.assign(CodemanApp.prototype, {
     // audible and keeps streaming from the server. Closing has to stop it.
     this._stopFilePreviewMedia();
     this.filePreviewContent = '';
+    this.filePreviewPath = '';
   },
 
   /**
@@ -4510,6 +4513,44 @@ Object.assign(CodemanApp.prototype, {
       }).catch(() => {
         this.showToast('Failed to copy', 'error');
       });
+    }
+  },
+
+  copyFilePreviewPath() {
+    const filePath = this.filePreviewPath || this.$('filePreviewTitle')?.textContent || '';
+    if (!filePath) return;
+    const session = this.sessions.get(this.activeSessionId);
+    const workingDir = session?.workingDir || '';
+    const fullPath = this.normalizeFilePath(filePath, workingDir);
+    if (!fullPath) return;
+    this._copyToClipboard(fullPath, 'Full path copied to clipboard', 'Failed to copy path');
+  },
+
+  _copyToClipboard(text, successMsg, errorMsg) {
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(text).then(() => {
+        this.showToast(successMsg, 'success');
+      }).catch(() => {
+        this._copyToClipboardFallback(text, successMsg, errorMsg);
+      });
+    } else {
+      this._copyToClipboardFallback(text, successMsg, errorMsg);
+    }
+  },
+
+  _copyToClipboardFallback(text, successMsg, errorMsg) {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.cssText = 'position:fixed;left:-9999px;top:-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    try {
+      document.execCommand('copy');
+      this.showToast(successMsg, 'success');
+    } catch {
+      this.showToast(errorMsg, 'error');
+    } finally {
+      document.body.removeChild(ta);
     }
   },
 
